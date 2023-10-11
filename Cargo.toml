@@ -14,6 +14,7 @@ log = "0.4"
 wgpu = "0.17"
 winit = "0.28"
 khronos-egl = { version = "6.0", features = ["static"], optional = true }
+bytemuck = { version = "1.14", features = ["derive"] }
 
 [features]
 default = ["egl"]
