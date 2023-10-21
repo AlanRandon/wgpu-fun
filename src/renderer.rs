@@ -2,20 +2,19 @@ use wgpu::include_wgsl;
 use winit::window::Window;
 
 #[derive(Debug, Clone, Copy)]
-pub struct ObjectId(usize);
+pub struct ShapeId(usize);
 
-pub struct Renderer<'a> {
+pub struct Renderer {
     surface: wgpu::Surface,
     pub device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
     render_pipeline: wgpu::RenderPipeline,
-    objects: Vec<Box<dyn Render + 'a>>,
     pub window: Window,
 }
 
-impl<'a> Renderer<'a> {
+impl Renderer {
     pub async fn new(window: Window) -> Self {
         let size = window.inner_size();
 
@@ -120,7 +119,6 @@ impl<'a> Renderer<'a> {
             config,
             size,
             window,
-            objects: Vec::new(),
             render_pipeline,
         }
     }
@@ -134,13 +132,10 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    pub fn create_object(&mut self, object: impl Render + 'a) -> ObjectId {
-        let id = self.objects.len();
-        self.objects.push(Box::new(object));
-        ObjectId(id)
-    }
-
-    pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
+    pub fn render<'a>(
+        &mut self,
+        shapes: impl IntoIterator<Item = &'a Shape>,
+    ) -> Result<(), wgpu::SurfaceError> {
         let texture = self.surface.get_current_texture()?;
         let view = texture
             .texture
@@ -172,8 +167,15 @@ impl<'a> Renderer<'a> {
             });
 
             render_pass.set_pipeline(&self.render_pipeline);
-            for object in &self.objects {
-                object.render(&mut render_pass);
+            for shape in shapes {
+                let Shape {
+                    vertex_buffer,
+                    index_buffer,
+                    index_count,
+                } = shape;
+                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                render_pass.draw_indexed(0..*index_count, 0, 0..1);
             }
         }
 
@@ -184,12 +186,15 @@ impl<'a> Renderer<'a> {
     }
 }
 
-pub trait Render {
-    fn render<'a>(&'a self, encoder: &mut wgpu::RenderPass<'a>);
+#[derive(Debug)]
+pub struct Shape {
+    pub vertex_buffer: wgpu::Buffer,
+    pub index_buffer: wgpu::Buffer,
+    pub index_count: u32,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub color: [f32; 3],
