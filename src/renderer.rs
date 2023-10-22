@@ -1,21 +1,26 @@
+use buffer::Mesh;
 use wgpu::include_wgsl;
 use winit::window::Window;
+
+use self::buffer::Vertex;
+
+pub mod buffer;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ShapeId(usize);
 
-pub struct Renderer {
+pub struct Renderer<'a> {
     surface: wgpu::Surface,
     pub device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
     render_pipeline: wgpu::RenderPipeline,
-    pub window: Window,
+    pub window: &'a Window,
 }
 
-impl Renderer {
-    pub async fn new(window: Window) -> Self {
+impl<'a> Renderer<'a> {
+    pub async fn new(window: &'a Window) -> Self {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
@@ -132,10 +137,7 @@ impl Renderer {
         }
     }
 
-    pub fn render<'a>(
-        &mut self,
-        shapes: impl IntoIterator<Item = &'a Shape>,
-    ) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self, mesh: Mesh) -> Result<(), wgpu::SurfaceError> {
         let texture = self.surface.get_current_texture()?;
         let view = texture
             .texture
@@ -147,70 +149,40 @@ impl Renderer {
                 label: Some("Render Encoder"),
             });
 
-        {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.,
-                            g: 0.,
-                            b: 0.,
-                            a: 1.,
-                        }),
-                        store: true,
-                    },
-                })],
-                depth_stencil_attachment: None,
-            });
+        let Mesh {
+            vertex_buffer,
+            index_buffer,
+            index_count,
+        } = mesh;
 
-            render_pass.set_pipeline(&self.render_pipeline);
-            for shape in shapes {
-                let Shape {
-                    vertex_buffer,
-                    index_buffer,
-                    index_count,
-                } = shape;
-                render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
-                render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                render_pass.draw_indexed(0..*index_count, 0, 0..1);
-            }
-        }
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("Render Pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.,
+                        g: 0.,
+                        b: 0.,
+                        a: 1.,
+                    }),
+                    store: true,
+                },
+            })],
+            depth_stencil_attachment: None,
+        });
+
+        render_pass.set_pipeline(&self.render_pipeline);
+        render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+        render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        render_pass.draw_indexed(0..index_count, 0, 0..1);
+
+        drop(render_pass);
 
         self.queue.submit(std::iter::once(encoder.finish()));
         texture.present();
 
         Ok(())
-    }
-}
-
-#[derive(Debug)]
-pub struct Shape {
-    pub vertex_buffer: wgpu::Buffer,
-    pub index_buffer: wgpu::Buffer,
-    pub index_count: u32,
-}
-
-#[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Vertex {
-    pub position: [f32; 3],
-    pub color: [f32; 3],
-}
-
-impl Vertex {
-    const ATTRIBS: [wgpu::VertexAttribute; 2] =
-        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
-
-    pub fn buffer_layout() -> wgpu::VertexBufferLayout<'static> {
-        use std::mem;
-
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &Self::ATTRIBS,
-        }
     }
 }

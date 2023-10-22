@@ -1,9 +1,11 @@
 use futures_lite::future;
-use renderer::{Shape, Vertex};
+use renderer::buffer::{Mesh, MeshBuilder, Vertex};
+use std::cell::UnsafeCell;
 use std::f32::consts::{FRAC_PI_8, TAU};
-use wgpu::util::DeviceExt;
-use winit::event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop};
+use std::sync::Arc;
+use winit::event::{ElementState, Event, KeyEvent, WindowEvent};
+use winit::event_loop::EventLoop;
+use winit::keyboard::{Key, NamedKey};
 use winit::window::WindowBuilder;
 
 mod renderer;
@@ -22,7 +24,7 @@ struct Rectangle {
 }
 
 impl Rectangle {
-    fn create_shape(&self, device: &wgpu::Device) -> Shape {
+    fn push(&self, mesh: &mut MeshBuilder) {
         let Self {
             x,
             y,
@@ -31,36 +33,19 @@ impl Rectangle {
             color,
         } = self;
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(
-                &[
-                    [*x, *y, 0.],
-                    [x + width, *y, 0.],
-                    [x + width, y + height, 0.],
-                    [*x, y + height, 0.],
-                ]
-                .map(|position| Vertex {
-                    position,
-                    color: *color,
-                }),
-            ),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let indices = [0u16, 1, 2, 0, 2, 3];
-        let index_count = indices.len() as u32;
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        Shape {
-            vertex_buffer,
-            index_buffer,
-            index_count,
-        }
+        mesh.push(
+            [
+                [*x, *y, 0.],
+                [x + width, *y, 0.],
+                [x + width, y + height, 0.],
+                [*x, y + height, 0.],
+            ]
+            .map(|position| Vertex {
+                position,
+                color: *color,
+            }),
+            [0, 1, 2, 0, 2, 3],
+        )
     }
 }
 
@@ -73,7 +58,7 @@ impl Ball {
     const SEGMENTS: usize = 20;
     const RADIUS: f32 = 0.05;
 
-    fn create_shape(&self, device: &wgpu::Device) -> Shape {
+    fn push(&self, mesh: &mut MeshBuilder) {
         let Self { position, .. } = self;
         let [x, y] = position;
 
@@ -97,30 +82,15 @@ impl Ball {
         )
         .collect::<Vec<_>>();
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Ball Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let indices = (1..vertices.len())
+        let indices = (1..Self::SEGMENTS + 1)
             .flat_map(|i| [0u16, (i as u16 + 1) % vertices.len() as u16, i as u16])
             .collect::<Vec<_>>();
-        let index_count = indices.len() as u32;
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Ball Index Buffer"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
 
-        Shape {
-            vertex_buffer,
-            index_buffer,
-            index_count,
-        }
+        mesh.push(vertices, indices)
     }
 }
 
+#[derive(Debug)]
 struct Paddle {
     x: f32,
     /// A value in -1..=1 for the paddle's x velocity
@@ -133,7 +103,7 @@ impl Paddle {
     const Y: f32 = -0.7;
     const ANGLE_MULTIPLIER: f32 = FRAC_PI_8;
 
-    fn create_shape(&self, device: &wgpu::Device) -> Shape {
+    fn push(&self, mesh: &mut MeshBuilder) {
         let Self { x, velocity } = self;
         let angle = velocity * Self::ANGLE_MULTIPLIER;
         let (s, c) = angle.sin_cos();
@@ -141,38 +111,21 @@ impl Paddle {
         const FRAC_WIDTH_2: f32 = Paddle::WIDTH / 2.;
         const FRAC_HEIGHT_2: f32 = Paddle::HEIGHT / 2.;
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Paddle Vertex Buffer"),
-            contents: bytemuck::cast_slice(
-                &[
-                    [-FRAC_WIDTH_2, -FRAC_HEIGHT_2],
-                    [FRAC_WIDTH_2, -FRAC_HEIGHT_2],
-                    [FRAC_WIDTH_2, FRAC_HEIGHT_2],
-                    [-FRAC_WIDTH_2, FRAC_HEIGHT_2],
-                ]
-                .map(|[x, y]| [x * c - y * s, x * s + y * c])
-                .map(|[vert_x, y]| [x + vert_x, y + Self::Y])
-                .map(|[x, y]| Vertex {
-                    position: [x, y, 0.],
-                    color: [1., 1., 1.],
-                }),
-            ),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
-        let indices = [0u16, 1, 2, 0, 2, 3];
-        let index_count = indices.len() as u32;
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Paddle Index Buffer"),
-            contents: bytemuck::cast_slice(&indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
-        Shape {
-            vertex_buffer,
-            index_buffer,
-            index_count,
-        }
+        mesh.push(
+            [
+                [-FRAC_WIDTH_2, -FRAC_HEIGHT_2],
+                [FRAC_WIDTH_2, -FRAC_HEIGHT_2],
+                [FRAC_WIDTH_2, FRAC_HEIGHT_2],
+                [-FRAC_WIDTH_2, FRAC_HEIGHT_2],
+            ]
+            .map(|[x, y]| [x * c - y * s, x * s + y * c])
+            .map(|[vert_x, y]| [x + vert_x, y + Self::Y])
+            .map(|[x, y]| Vertex {
+                position: [x, y, 0.],
+                color: [1., 1., 1.],
+            }),
+            [0, 1, 2, 0, 2, 3],
+        )
     }
 }
 
@@ -181,16 +134,37 @@ struct Controls {
     right: ElementState,
 }
 
-fn main() {
+struct UnsafeRef<T>(UnsafeCell<T>);
+
+unsafe impl<T: Sync> Sync for UnsafeRef<T> {}
+
+impl<T> UnsafeRef<T> {
+    fn update(&self, f: impl FnOnce(T) -> T) {
+        let ptr = self.0.get();
+        let mut data = unsafe { std::ptr::read(ptr) };
+        data = f(data);
+        unsafe { std::ptr::write(ptr, data) }
+    }
+
+    fn get(&self) -> &T {
+        unsafe { self.0.get().as_ref().unwrap() }
+    }
+
+    fn new(data: T) -> Self {
+        Self(UnsafeCell::new(data))
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new()
         .with_title("WGPU fun")
-        .build(&event_loop)
-        .unwrap();
+        .build(&event_loop)?;
+    let window = Arc::new(window);
 
-    let mut renderer = future::block_on(renderer::Renderer::new(window));
+    let mut renderer = future::block_on(renderer::Renderer::new(window.as_ref()));
 
     let lose_zone = Rectangle {
         x: -1.,
@@ -199,95 +173,106 @@ fn main() {
         height: 0.1,
         color: [1., 0.6, 0.],
     };
-    let loze_zone_shape = lose_zone.create_shape(&renderer.device);
 
-    let mut paddle = Paddle {
+    let paddle = Arc::new(UnsafeRef::new(Paddle {
         x: 0.,
         velocity: 0.,
-    };
-    let mut paddle_shape = paddle.create_shape(&renderer.device);
+    }));
 
     let ball = Ball {
         position: [0., 0.7],
         velocity: [0., 0.],
     };
-    let ball_shape = ball.create_shape(&renderer.device);
 
-    let mut controls = Controls {
+    let controls = Arc::new(UnsafeRef::new(Controls {
         left: ElementState::Released,
         right: ElementState::Released,
-    };
+    }));
 
-    event_loop.run(move |event, _, control_flow| match event {
+    std::thread::spawn({
+        let window = Arc::clone(&window);
+        let controls = Arc::clone(&controls);
+        let paddle = Arc::clone(&paddle);
+        move || loop {
+            let controls = controls.get();
+
+            paddle.update(|mut paddle| {
+                match controls {
+                    Controls {
+                        left: ElementState::Pressed,
+                        right: ElementState::Released,
+                    } => {
+                        paddle.velocity = (paddle.velocity - 0.05).max(-1.0);
+                    }
+                    Controls {
+                        left: ElementState::Released,
+                        right: ElementState::Pressed,
+                    } => {
+                        paddle.velocity = (paddle.velocity + 0.05).min(1.0);
+                    }
+                    _ => {
+                        paddle.velocity *= 0.95;
+                    }
+                }
+                paddle.x = (paddle.x + paddle.velocity / 20.).clamp(-1.0, 1.0);
+                paddle
+            });
+
+            window.request_redraw();
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    });
+
+    event_loop.run(move |event, elwt| match event {
         Event::WindowEvent {
             ref event,
             window_id,
         } if window_id == renderer.window.id() => match event {
-            WindowEvent::CloseRequested
-            | WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        state: ElementState::Pressed,
-                        virtual_keycode: Some(VirtualKeyCode::Escape),
-                        ..
-                    },
-                ..
-            } => *control_flow = ControlFlow::Exit,
+            WindowEvent::CloseRequested => elwt.exit(),
             WindowEvent::Resized(size) => renderer.resize(*size),
-            WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                renderer.resize(**new_inner_size);
+            WindowEvent::ScaleFactorChanged { .. } => {
+                renderer.resize(renderer.window.inner_size());
             }
             WindowEvent::KeyboardInput {
-                input:
-                    KeyboardInput {
-                        state,
-                        virtual_keycode: Some(key),
-                        ..
-                    },
+                event: KeyEvent {
+                    state, logical_key, ..
+                },
                 ..
-            } => match key {
-                VirtualKeyCode::Right => controls.right = *state,
-                VirtualKeyCode::Left => controls.left = *state,
+            } => match logical_key {
+                Key::Named(NamedKey::ArrowRight) => controls.update(|mut controls| {
+                    controls.right = *state;
+                    controls
+                }),
+                Key::Named(NamedKey::ArrowLeft) => controls.update(|mut controls| {
+                    controls.left = *state;
+                    controls
+                }),
+                Key::Named(NamedKey::Escape) => elwt.exit(),
                 _ => {}
             },
+            WindowEvent::RedrawRequested => {
+                let mut mesh = Mesh::builder();
+                lose_zone.push(&mut mesh);
+                paddle.get().push(&mut mesh);
+                ball.push(&mut mesh);
+
+                match renderer.render(mesh.build(&renderer.device)) {
+                    Ok(_) => {}
+                    Err(wgpu::SurfaceError::Lost) => {
+                        renderer.resize(renderer.size);
+                    }
+                    Err(wgpu::SurfaceError::OutOfMemory) => {
+                        elwt.exit();
+                    }
+                    Err(err) => {
+                        eprintln!("{err:?}");
+                    }
+                };
+            }
             _ => {}
         },
-        Event::RedrawRequested(window_id) if renderer.window.id() == window_id => {
-            match renderer.render([&loze_zone_shape, &paddle_shape, &ball_shape]) {
-                Ok(_) => {}
-                Err(wgpu::SurfaceError::Lost) => {
-                    renderer.resize(renderer.size);
-                }
-                Err(wgpu::SurfaceError::OutOfMemory) => {
-                    *control_flow = ControlFlow::Exit;
-                }
-                Err(err) => {
-                    eprintln!("{err:?}");
-                }
-            };
-        }
-        Event::MainEventsCleared => {
-            match controls {
-                Controls {
-                    left: ElementState::Pressed,
-                    right: ElementState::Released,
-                } => {
-                    paddle.velocity = (paddle.velocity - 0.05).max(-1.0);
-                }
-                Controls {
-                    left: ElementState::Released,
-                    right: ElementState::Pressed,
-                } => {
-                    paddle.velocity = (paddle.velocity + 0.05).min(1.0);
-                }
-                _ => {
-                    paddle.velocity *= 0.95;
-                }
-            }
-            paddle.x = (paddle.x + paddle.velocity / 20.).clamp(-1.0, 1.0);
-            paddle_shape = paddle.create_shape(&renderer.device);
-            renderer.window.request_redraw();
-        }
         _ => {}
-    });
+    })?;
+
+    Ok(())
 }
