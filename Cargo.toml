@@ -6,9 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-async-executor = "1.5"
 futures-lite = "1.13"
-
 env_logger = "0.10"
 log = "0.4"
 wgpu = "0.17"
@@ -16,6 +14,8 @@ winit = { version = "0.29", features = ["rwh_05"] }
 khronos-egl = { version = "6.0", features = ["static"], optional = true }
 bytemuck = { version = "1.14", features = ["derive"] }
 cgmath = "0.18"
+crossbeam = "0.8"
+rand = "0.8"
 
 [features]
 default = ["egl"]

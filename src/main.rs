@@ -1,9 +1,11 @@
+use cgmath::prelude::*;
+use cgmath::Vector2;
 use futures_lite::future;
+use rand::Rng;
 use renderer::buffer::{Mesh, MeshBuilder, Vertex};
-use std::cell::UnsafeCell;
 use std::f32::consts::{FRAC_PI_8, TAU};
-use std::sync::Arc;
-use winit::event::{ElementState, Event, KeyEvent, WindowEvent};
+use std::sync::{Arc, Mutex};
+use winit::event::{ElementState, Event as WinitEvent, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::WindowBuilder;
@@ -47,11 +49,16 @@ impl Rectangle {
             [0, 1, 2, 0, 2, 3],
         )
     }
+
+    fn contains(&self, point: Vector2<f32>) -> bool {
+        (self.x..self.x + self.width).contains(&point.x)
+            & (self.y..self.y + self.height).contains(&point.y)
+    }
 }
 
 struct Ball {
-    position: [f32; 2],
-    velocity: [f32; 2],
+    position: Vector2<f32>,
+    velocity: Vector2<f32>,
 }
 
 impl Ball {
@@ -60,7 +67,7 @@ impl Ball {
 
     fn push(&self, mesh: &mut MeshBuilder) {
         let Self { position, .. } = self;
-        let [x, y] = position;
+        let Vector2 { x, y } = position;
 
         let vertices = std::iter::once(Vertex {
             position: [*x, *y, 0.],
@@ -90,6 +97,45 @@ impl Ball {
     }
 }
 
+fn triangle_contains(
+    p: Vector2<f32>,
+    v1: Vector2<f32>,
+    v2: Vector2<f32>,
+    v3: Vector2<f32>,
+) -> bool {
+    fn sign(p: Vector2<f32>, a: Vector2<f32>, b: Vector2<f32>) -> f32 {
+        (p.x - b.x) * (a.y - b.y) - (a.x - b.x) * (p.y - b.y)
+    }
+
+    let d1 = sign(p, v1, v2);
+    let d2 = sign(p, v2, v3);
+    let d3 = sign(p, v3, v1);
+
+    let has_neg = (d1 < 0.) || (d2 < 0.) || (d3 < 0.);
+    let has_pos = (d1 > 0.) || (d2 > 0.) || (d3 > 0.);
+
+    !(has_neg && has_pos)
+}
+
+#[test]
+fn triangle_contains_works() {
+    use cgmath::vec2;
+
+    assert!(triangle_contains(
+        vec2(0.1, 0.1),
+        vec2(0., 0.),
+        vec2(1., 0.),
+        vec2(0., 1.)
+    ));
+
+    assert!(!triangle_contains(
+        vec2(-0.1, -0.1),
+        vec2(0., 0.),
+        vec2(1., 0.),
+        vec2(0., 1.)
+    ));
+}
+
 #[derive(Debug)]
 struct Paddle {
     x: f32,
@@ -102,8 +148,9 @@ impl Paddle {
     const HEIGHT: f32 = 0.2;
     const Y: f32 = -0.7;
     const ANGLE_MULTIPLIER: f32 = FRAC_PI_8;
+    const NORMAL_ANGLE_MULTIPLIER: f32 = FRAC_PI_8 / 2.;
 
-    fn push(&self, mesh: &mut MeshBuilder) {
+    fn points(&self) -> [Vector2<f32>; 4] {
         let Self { x, velocity } = self;
         let angle = velocity * Self::ANGLE_MULTIPLIER;
         let (s, c) = angle.sin_cos();
@@ -111,48 +158,55 @@ impl Paddle {
         const FRAC_WIDTH_2: f32 = Paddle::WIDTH / 2.;
         const FRAC_HEIGHT_2: f32 = Paddle::HEIGHT / 2.;
 
+        [
+            [-FRAC_WIDTH_2, -FRAC_HEIGHT_2],
+            [FRAC_WIDTH_2, -FRAC_HEIGHT_2],
+            [FRAC_WIDTH_2, FRAC_HEIGHT_2],
+            [-FRAC_WIDTH_2, FRAC_HEIGHT_2],
+        ]
+        .map(|[x, y]| [x * c - y * s, x * s + y * c])
+        .map(|[vert_x, y]| [x + vert_x, y + Self::Y])
+        .map(|v| v.into())
+    }
+
+    fn push(&self, mesh: &mut MeshBuilder) {
         mesh.push(
-            [
-                [-FRAC_WIDTH_2, -FRAC_HEIGHT_2],
-                [FRAC_WIDTH_2, -FRAC_HEIGHT_2],
-                [FRAC_WIDTH_2, FRAC_HEIGHT_2],
-                [-FRAC_WIDTH_2, FRAC_HEIGHT_2],
-            ]
-            .map(|[x, y]| [x * c - y * s, x * s + y * c])
-            .map(|[vert_x, y]| [x + vert_x, y + Self::Y])
-            .map(|[x, y]| Vertex {
-                position: [x, y, 0.],
+            self.points().map(|v| Vertex {
+                position: [v.x, v.y, 0.],
                 color: [1., 1., 1.],
             }),
             [0, 1, 2, 0, 2, 3],
         )
     }
+
+    fn contains(&self, point: Vector2<f32>) -> bool {
+        let [a, b, c, d] = self.points();
+        triangle_contains(point, a, b, c) | triangle_contains(point, a, c, d)
+    }
+
+    fn normal(&self) -> Vector2<f32> {
+        let angle = self.velocity * Self::NORMAL_ANGLE_MULTIPLIER;
+        let rotation: cgmath::Basis2<f32> = cgmath::Rotation2::from_angle(cgmath::Rad(angle));
+        let velocity = rotation.rotate_vector(Vector2::unit_y());
+
+        let angle = self.x * Self::NORMAL_ANGLE_MULTIPLIER;
+        let rotation: cgmath::Basis2<f32> = cgmath::Rotation2::from_angle(cgmath::Rad(angle));
+        let position = rotation.rotate_vector(Vector2::unit_y());
+
+        velocity * 0.5 + position * 0.5
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Event {
+    Left(ElementState),
+    Right(ElementState),
+    Reset,
 }
 
 struct Controls {
     left: ElementState,
     right: ElementState,
-}
-
-struct UnsafeRef<T>(UnsafeCell<T>);
-
-unsafe impl<T: Sync> Sync for UnsafeRef<T> {}
-
-impl<T> UnsafeRef<T> {
-    fn update(&self, f: impl FnOnce(T) -> T) {
-        let ptr = self.0.get();
-        let mut data = unsafe { std::ptr::read(ptr) };
-        data = f(data);
-        unsafe { std::ptr::write(ptr, data) }
-    }
-
-    fn get(&self) -> &T {
-        unsafe { self.0.get().as_ref().unwrap() }
-    }
-
-    fn new(data: T) -> Self {
-        Self(UnsafeCell::new(data))
-    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -165,6 +219,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let window = Arc::new(window);
 
     let mut renderer = future::block_on(renderer::Renderer::new(window.as_ref()));
+    let (event_send, event_recv) = crossbeam::channel::unbounded();
 
     let lose_zone = Rectangle {
         x: -1.,
@@ -174,29 +229,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         color: [1., 0.6, 0.],
     };
 
-    let paddle = Arc::new(UnsafeRef::new(Paddle {
+    let mut paddle = Paddle {
         x: 0.,
         velocity: 0.,
-    }));
-
-    let ball = Ball {
-        position: [0., 0.7],
-        velocity: [0., 0.],
     };
 
-    let controls = Arc::new(UnsafeRef::new(Controls {
+    let mut ball = Ball {
+        position: [0., 0.7].into(),
+        velocity: [0., 0.].into(),
+    };
+
+    let mut controls = Controls {
         left: ElementState::Released,
         right: ElementState::Released,
-    }));
+    };
+
+    let mesh = Arc::new(Mutex::new(Mesh::builder()));
 
     std::thread::spawn({
         let window = Arc::clone(&window);
-        let controls = Arc::clone(&controls);
-        let paddle = Arc::clone(&paddle);
-        move || loop {
-            let controls = controls.get();
+        let mesh = Arc::clone(&mesh);
+        let event_send = event_send.clone();
+        move || {
+            let mut rng = rand::thread_rng();
+            loop {
+                for event in event_recv.try_iter() {
+                    match event {
+                        Event::Left(state) => controls.left = state,
+                        Event::Right(state) => controls.right = state,
+                        Event::Reset => {
+                            ball.position = [0., 0.7].into();
+                        }
+                    }
+                }
 
-            paddle.update(|mut paddle| {
                 match controls {
                     Controls {
                         left: ElementState::Pressed,
@@ -214,17 +280,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         paddle.velocity *= 0.95;
                     }
                 }
-                paddle.x = (paddle.x + paddle.velocity / 20.).clamp(-1.0, 1.0);
-                paddle
-            });
 
-            window.request_redraw();
-            std::thread::sleep(std::time::Duration::from_millis(10));
+                paddle.x = (paddle.x + paddle.velocity / 20.).clamp(-1.0, 1.0);
+
+                // gravity
+                ball.velocity.y = ball.velocity.y + ball.velocity.y.clamp(-0.5, -0.1) * 0.01;
+
+                if paddle.contains(ball.position) {
+                    ball.velocity += paddle.normal();
+                    ball.velocity.x += ((rng.gen::<f32>() * 2.) - 0.5) * 0.01;
+                }
+
+                ball.velocity = ball.velocity.map(|x| x * 0.95);
+                ball.velocity = ball.velocity.map(|i| i.clamp(-0.1, 0.1));
+
+                ball.position += ball.velocity;
+                ball.position.x = ball.position.x.clamp(-1., 1.);
+                ball.position.y = ball.position.y.max(-1.);
+
+                if lose_zone.contains(ball.position) {
+                    event_send.send(Event::Reset).unwrap();
+                }
+
+                *mesh.lock().unwrap() = {
+                    let mut mesh = Mesh::builder();
+                    lose_zone.push(&mut mesh);
+                    paddle.push(&mut mesh);
+                    ball.push(&mut mesh);
+                    mesh
+                };
+                window.request_redraw();
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
         }
     });
 
     event_loop.run(move |event, elwt| match event {
-        Event::WindowEvent {
+        WinitEvent::WindowEvent {
             ref event,
             window_id,
         } if window_id == renderer.window.id() => match event {
@@ -239,24 +331,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 ..
             } => match logical_key {
-                Key::Named(NamedKey::ArrowRight) => controls.update(|mut controls| {
-                    controls.right = *state;
-                    controls
-                }),
-                Key::Named(NamedKey::ArrowLeft) => controls.update(|mut controls| {
-                    controls.left = *state;
-                    controls
-                }),
+                Key::Named(NamedKey::ArrowRight) => event_send.send(Event::Right(*state)).unwrap(),
+                Key::Named(NamedKey::ArrowLeft) => event_send.send(Event::Left(*state)).unwrap(),
+                Key::Named(NamedKey::Space) if state == &ElementState::Pressed => {
+                    event_send.send(Event::Reset).unwrap()
+                }
                 Key::Named(NamedKey::Escape) => elwt.exit(),
                 _ => {}
             },
             WindowEvent::RedrawRequested => {
-                let mut mesh = Mesh::builder();
-                lose_zone.push(&mut mesh);
-                paddle.get().push(&mut mesh);
-                ball.push(&mut mesh);
-
-                match renderer.render(mesh.build(&renderer.device)) {
+                let mesh = mesh.lock().unwrap().clone().build(&renderer.device);
+                match renderer.render(mesh) {
                     Ok(_) => {}
                     Err(wgpu::SurfaceError::Lost) => {
                         renderer.resize(renderer.size);

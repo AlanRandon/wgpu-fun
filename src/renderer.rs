@@ -1,13 +1,9 @@
+use self::buffer::Vertex;
 use buffer::Mesh;
 use wgpu::include_wgsl;
 use winit::window::Window;
 
-use self::buffer::Vertex;
-
 pub mod buffer;
-
-#[derive(Debug, Clone, Copy)]
-pub struct ShapeId(usize);
 
 pub struct Renderer<'a> {
     surface: wgpu::Surface,
