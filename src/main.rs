@@ -10,6 +10,7 @@ use winit::event_loop::EventLoop;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::WindowBuilder;
 
+mod collison;
 mod renderer;
 
 #[cfg(feature = "egl")]
@@ -17,42 +18,30 @@ mod renderer;
 #[link(name = "GLESv2")]
 extern "C" {}
 
-struct Rectangle {
-    x: f32,
-    y: f32,
-    width: f32,
-    height: f32,
-    color: [f32; 3],
-}
+struct LoseZone;
 
-impl Rectangle {
+impl LoseZone {
+    const HEIGHT: f32 = 0.1;
+    const COLOR: [f32; 3] = [1., 0.6, 0.];
+
     fn push(&self, mesh: &mut MeshBuilder) {
-        let Self {
-            x,
-            y,
-            width,
-            height,
-            color,
-        } = self;
-
         mesh.push(
             [
-                [*x, *y, 0.],
-                [x + width, *y, 0.],
-                [x + width, y + height, 0.],
-                [*x, y + height, 0.],
+                [-1., -1., 0.],
+                [1., -1., 0.],
+                [1., -1. + Self::HEIGHT, 0.],
+                [-1., -1. + Self::HEIGHT, 0.],
             ]
             .map(|position| Vertex {
                 position,
-                color: *color,
+                color: Self::COLOR,
             }),
             [0, 1, 2, 0, 2, 3],
         )
     }
 
     fn contains(&self, point: Vector2<f32>) -> bool {
-        (self.x..self.x + self.width).contains(&point.x)
-            & (self.y..self.y + self.height).contains(&point.y)
+        point.y < -1. + Self::HEIGHT
     }
 }
 
@@ -95,45 +84,6 @@ impl Ball {
 
         mesh.push(vertices, indices)
     }
-}
-
-fn triangle_contains(
-    p: Vector2<f32>,
-    v1: Vector2<f32>,
-    v2: Vector2<f32>,
-    v3: Vector2<f32>,
-) -> bool {
-    fn sign(p: Vector2<f32>, a: Vector2<f32>, b: Vector2<f32>) -> f32 {
-        (p.x - b.x) * (a.y - b.y) - (a.x - b.x) * (p.y - b.y)
-    }
-
-    let d1 = sign(p, v1, v2);
-    let d2 = sign(p, v2, v3);
-    let d3 = sign(p, v3, v1);
-
-    let has_neg = (d1 < 0.) || (d2 < 0.) || (d3 < 0.);
-    let has_pos = (d1 > 0.) || (d2 > 0.) || (d3 > 0.);
-
-    !(has_neg && has_pos)
-}
-
-#[test]
-fn triangle_contains_works() {
-    use cgmath::vec2;
-
-    assert!(triangle_contains(
-        vec2(0.1, 0.1),
-        vec2(0., 0.),
-        vec2(1., 0.),
-        vec2(0., 1.)
-    ));
-
-    assert!(!triangle_contains(
-        vec2(-0.1, -0.1),
-        vec2(0., 0.),
-        vec2(1., 0.),
-        vec2(0., 1.)
-    ));
 }
 
 #[derive(Debug)]
@@ -179,9 +129,10 @@ impl Paddle {
         )
     }
 
-    fn contains(&self, point: Vector2<f32>) -> bool {
+    fn contains(&self, ball: &Ball) -> bool {
         let [a, b, c, d] = self.points();
-        triangle_contains(point, a, b, c) | triangle_contains(point, a, c, d)
+        collison::circle_intersects_triangle(ball.position, Ball::RADIUS, a, b, c)
+            | collison::circle_intersects_triangle(ball.position, Ball::RADIUS, a, c, d)
     }
 
     fn normal(&self) -> Vector2<f32> {
@@ -221,13 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = future::block_on(renderer::Renderer::new(window.as_ref()));
     let (event_send, event_recv) = crossbeam::channel::unbounded();
 
-    let lose_zone = Rectangle {
-        x: -1.,
-        y: -1.,
-        width: 2.,
-        height: 0.1,
-        color: [1., 0.6, 0.],
-    };
+    let lose_zone = LoseZone;
 
     let mut paddle = Paddle {
         x: 0.,
@@ -286,7 +231,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // gravity
                 ball.velocity.y = ball.velocity.y + ball.velocity.y.clamp(-0.5, -0.1) * 0.01;
 
-                if paddle.contains(ball.position) {
+                if paddle.contains(&ball) {
                     ball.velocity += paddle.normal();
                     ball.velocity.x += ((rng.gen::<f32>() * 2.) - 0.5) * 0.01;
                 }
