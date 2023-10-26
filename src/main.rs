@@ -27,10 +27,10 @@ impl LoseZone {
     fn push(&self, mesh: &mut MeshBuilder) {
         mesh.push(
             [
-                [-1., -1., 0.],
-                [1., -1., 0.],
-                [1., -1. + Self::HEIGHT, 0.],
-                [-1., -1. + Self::HEIGHT, 0.],
+                [-10., -1.],
+                [10., -1.],
+                [10., -1. + Self::HEIGHT],
+                [-10., -1. + Self::HEIGHT],
             ]
             .map(|position| Vertex {
                 position,
@@ -59,7 +59,7 @@ impl Ball {
         let Vector2 { x, y } = position;
 
         let vertices = std::iter::once(Vertex {
-            position: [*x, *y, 0.],
+            position: [*x, *y],
             color: [1., 1., 1.],
         })
         .chain(
@@ -72,7 +72,7 @@ impl Ball {
                 })
                 .map(|[vert_x, vert_y]| [vert_x + x, vert_y + y])
                 .map(|[x, y]| Vertex {
-                    position: [x, y, 0.],
+                    position: [x, y],
                     color: [1., 1., 1.],
                 }),
         )
@@ -122,7 +122,7 @@ impl Paddle {
     fn push(&self, mesh: &mut MeshBuilder) {
         mesh.push(
             self.points().map(|v| Vertex {
-                position: [v.x, v.y, 0.],
+                position: [v.x, v.y],
                 color: [1., 1., 1.],
             }),
             [0, 1, 2, 0, 2, 3],
@@ -190,11 +190,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mesh = Arc::new(Mutex::new(Mesh::builder()));
+    let camera_x = Arc::new(Mutex::new(0.0));
 
     std::thread::spawn({
         let window = Arc::clone(&window);
         let mesh = Arc::clone(&mesh);
+        let camera_x = Arc::clone(&camera_x);
         let event_send = event_send.clone();
+
         move || {
             let mut rng = rand::thread_rng();
             loop {
@@ -226,7 +229,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
 
-                paddle.x = (paddle.x + paddle.velocity / 20.).clamp(-1.0, 1.0);
+                paddle.x = (paddle.x + paddle.velocity / 20.).clamp(-5.5, 5.5);
 
                 // gravity
                 ball.velocity.y = ball.velocity.y + ball.velocity.y.clamp(-0.5, -0.1) * 0.01;
@@ -240,8 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ball.velocity = ball.velocity.map(|i| i.clamp(-0.1, 0.1));
 
                 ball.position += ball.velocity;
-                ball.position.x = ball.position.x.clamp(-1., 1.);
-                ball.position.y = ball.position.y.max(-1.);
+                ball.position.x = ball.position.x.clamp(-5.5, 5.5);
 
                 if lose_zone.contains(ball.position) {
                     event_send.send(Event::Reset).unwrap();
@@ -254,6 +256,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ball.push(&mut mesh);
                     mesh
                 };
+
+                {
+                    let mut camera_x = camera_x.lock().unwrap();
+                    *camera_x = ((*camera_x * 10. + paddle.x) / 11.).clamp(-5.0, 5.0);
+                }
+
                 window.request_redraw();
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
@@ -286,7 +294,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             WindowEvent::RedrawRequested => {
                 let mesh = mesh.lock().unwrap().clone().build(&renderer.device);
-                match renderer.render(mesh) {
+                match renderer.render(mesh, *camera_x.lock().unwrap()) {
                     Ok(_) => {}
                     Err(wgpu::SurfaceError::Lost) => {
                         renderer.resize(renderer.size);

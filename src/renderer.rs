@@ -1,6 +1,7 @@
 use self::buffer::Vertex;
 use buffer::Mesh;
 use wgpu::include_wgsl;
+use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 pub mod buffer;
@@ -12,6 +13,7 @@ pub struct Renderer<'a> {
     config: wgpu::SurfaceConfiguration,
     pub size: winit::dpi::PhysicalSize<u32>,
     render_pipeline: wgpu::RenderPipeline,
+    camera_x: wgpu::BindGroupLayout,
     pub window: &'a Window,
 }
 
@@ -68,10 +70,25 @@ impl<'a> Renderer<'a> {
 
         let shader = device.create_shader_module(include_wgsl!("shaders/shader.wgsl"));
 
+        let camera_x_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("Camera x Bind Group Layout"),
+            });
+
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&camera_x_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -119,8 +136,9 @@ impl<'a> Renderer<'a> {
             queue,
             config,
             size,
-            window,
+            camera_x: camera_x_bind_group_layout,
             render_pipeline,
+            window,
         }
     }
 
@@ -133,7 +151,7 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    pub fn render(&mut self, mesh: Mesh) -> Result<(), wgpu::SurfaceError> {
+    pub fn render(&mut self, mesh: Mesh, camera_x: f32) -> Result<(), wgpu::SurfaceError> {
         let texture = self.surface.get_current_texture()?;
         let view = texture
             .texture
@@ -144,6 +162,23 @@ impl<'a> Renderer<'a> {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Render Encoder"),
             });
+
+        let buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Camera x Buffer"),
+                contents: bytemuck::cast_slice(&[camera_x]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.camera_x,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+            label: Some("Camera x Bind Group"),
+        });
 
         let Mesh {
             vertex_buffer,
@@ -170,8 +205,12 @@ impl<'a> Renderer<'a> {
         });
 
         render_pass.set_pipeline(&self.render_pipeline);
+
         render_pass.set_vertex_buffer(0, vertex_buffer.slice(..));
         render_pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+
+        render_pass.set_bind_group(0, &bind_group, &[]);
+
         render_pass.draw_indexed(0..index_count, 0, 0..1);
 
         drop(render_pass);
